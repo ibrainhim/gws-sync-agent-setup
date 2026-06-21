@@ -6,7 +6,15 @@ IMAGE="gcr.io/cloudrun/hello"   # placeholder — swap with real image on first 
 JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 
-PROJECT=$(gcloud config get-value project)
+# Cloud Shell sets DEVSHELL_PROJECT_ID when a project is selected in the UI.
+# gcloud config may lag behind — prefer the env var.
+PROJECT="${DEVSHELL_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+
+if [ -z "$PROJECT" ]; then
+  read -rp "GCP Project ID: " PROJECT
+fi
+
+gcloud config set project "$PROJECT" --quiet
 echo "Setting up OutThink Google Workspace Sync Agent in project: $PROJECT"
 echo ""
 

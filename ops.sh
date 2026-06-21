@@ -3,7 +3,7 @@ set -euo pipefail
 
 JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
-PROJECT=$(gcloud config get-value project)
+PROJECT="${DEVSHELL_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 COMMAND="${1:-help}"
 
 case "$COMMAND" in
