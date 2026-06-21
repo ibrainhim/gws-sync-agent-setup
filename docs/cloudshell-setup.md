@@ -1,9 +1,11 @@
 # OutThink Google Workspace Sync Agent
 
-Welcome. Use the arrows at the bottom to navigate between pages.
-Each code block is clickable — it runs directly in the terminal on the left.
+Welcome. Before we begin, select the GCP project you want to deploy into.
 
-<walkthrough-project-setup></walkthrough-project-setup>
+Use the dropdown below to find your project, then click **Set Project**.
+Once set, click **Next** to continue.
+
+<walkthrough-project-setup billing="true"></walkthrough-project-setup>
 
 ---
 
