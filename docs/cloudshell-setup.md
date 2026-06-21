@@ -11,10 +11,16 @@ Each code block is clickable — it runs directly in the terminal on the left.
 
 **Step 1 — Confirm your project**
 
-Click below to set the project you selected above as active in this terminal:
+Click below to confirm the project is active in this terminal:
 
 ```bash
-gcloud config set project $DEVSHELL_PROJECT_ID
+gcloud config set project $DEVSHELL_PROJECT_ID && echo "Active project: $(gcloud config get-value project)"
+```
+
+If you see `Active project: (unset)`, run this instead and replace `YOUR_PROJECT_ID`:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
 ```
 
 **Step 2 — Run setup**

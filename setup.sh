@@ -9,14 +9,17 @@ REGION="europe-west1"
 PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
 
 if [ -z "$PROJECT" ]; then
-  echo "Your available GCP projects:"
-  gcloud projects list --format="table(projectId,name)" 2>/dev/null
   echo ""
-  read -rp "Enter your Project ID from the list above: " PROJECT
+  echo "No GCP project detected."
+  echo "Run this first, then re-run setup:"
+  echo ""
+  echo "  gcloud config set project YOUR_PROJECT_ID"
+  echo ""
+  exit 1
 fi
 
 gcloud config set project "$PROJECT" --quiet
-echo "Setting up OutThink Google Workspace Sync Agent in project: $PROJECT"
+echo "Project: $PROJECT"
 echo ""
 
 # ── Guard: already deployed ─────────────────────────────────────────────────
