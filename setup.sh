@@ -6,12 +6,13 @@ IMAGE="gcr.io/cloudrun/hello"   # placeholder — swap with real image on first 
 JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 
-# Cloud Shell sets DEVSHELL_PROJECT_ID when a project is selected in the UI.
-# gcloud config may lag behind — prefer the env var.
-PROJECT="${DEVSHELL_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
 
 if [ -z "$PROJECT" ]; then
-  read -rp "GCP Project ID: " PROJECT
+  echo "Your available GCP projects:"
+  gcloud projects list --format="table(projectId,name)" 2>/dev/null
+  echo ""
+  read -rp "Enter your Project ID from the list above: " PROJECT
 fi
 
 gcloud config set project "$PROJECT" --quiet

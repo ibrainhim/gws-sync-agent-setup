@@ -9,6 +9,16 @@ Each code block is clickable — it runs directly in the terminal on the left.
 
 ## First-time Setup
 
+**Step 1 — Confirm your project**
+
+Click below to set the project you selected above as active in this terminal:
+
+```bash
+gcloud config set project $DEVSHELL_PROJECT_ID
+```
+
+**Step 2 — Run setup**
+
 Runs once. Safe to click again — the script detects an existing deployment and stops.
 
 ```bash
