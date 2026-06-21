@@ -10,12 +10,11 @@ PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-valu
 
 if [ -z "$PROJECT" ]; then
   echo ""
-  echo "No GCP project detected."
-  echo "Run this first, then re-run setup:"
+  echo "Your GCP projects:"
+  gcloud projects list --format="value(projectId)" 2>/dev/null
   echo ""
-  echo "  gcloud config set project YOUR_PROJECT_ID"
-  echo ""
-  exit 1
+  read -rp "Enter Project ID: " PROJECT
+  gcloud config set project "$PROJECT" --quiet
 fi
 
 gcloud config set project "$PROJECT" --quiet
