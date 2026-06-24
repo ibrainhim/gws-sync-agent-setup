@@ -29,8 +29,7 @@ if [ -z "$BILLING_ACCOUNT" ]; then
   echo "       Grant this identity roles/billing.user and re-run."
   exit 1
 fi
-BA_SUFFIX=$(echo "$BILLING_ACCOUNT" | tr '[:upper:]' '[:lower:]' | awk -F'-' '{print $NF}')
-PROJECT="${PROJECT:-outthink-gws-sync-${BA_SUFFIX}}"
+PROJECT="${PROJECT:-ot-gws-$(echo "$BILLING_ACCOUNT" | tr '[:upper:]' '[:lower:]')}"
 
 # ── Create project (idempotent) ──────────────────────────────────────────────
 if gcloud projects describe "$PROJECT" --quiet &>/dev/null; then
