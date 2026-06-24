@@ -29,7 +29,23 @@ if [ -z "$BILLING_ACCOUNT" ]; then
   echo "       Grant this identity roles/billing.user and re-run."
   exit 1
 fi
-PROJECT="${PROJECT:-ot-gws-$(echo "$BILLING_ACCOUNT" | tr '[:upper:]' '[:lower:]')}"
+# Derive a human-readable project ID from the billing account display name
+# (visible in GCP console and billing dashboards).
+# Format: outthink-gws-<company-slug>-<4-char-ba-tail>
+# e.g.   outthink-gws-acme-corp-a1b2  (≤ 30 chars, GCP project ID limit)
+DISPLAY=$(gcloud billing accounts list \
+  --filter="open=true" \
+  --format="value(displayName)" \
+  --limit=1 2>/dev/null || true)
+SLUG=$(echo "$DISPLAY" | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9]/-/g; s/-\+/-/g; s/^-//; s/-$//' \
+  | cut -c1-10)
+BA_TAIL=$(echo "$BILLING_ACCOUNT" | tr -d '-' | tr '[:upper:]' '[:lower:]' | rev | cut -c1-4 | rev)
+if [ -n "$SLUG" ]; then
+  PROJECT="${PROJECT:-outthink-gws-${SLUG}-${BA_TAIL}}"
+else
+  PROJECT="${PROJECT:-outthink-gws-${BA_TAIL}}"
+fi
 
 # ── Create project (idempotent) ──────────────────────────────────────────────
 if gcloud projects describe "$PROJECT" --quiet &>/dev/null; then
