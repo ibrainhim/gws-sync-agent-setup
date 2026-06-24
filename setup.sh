@@ -5,32 +5,40 @@ JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 AR_REPO="outthink-sync-agent"
 
-PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-}}"
+# ── Required inputs (must be set in the environment — no prompts) ────────────
+: "${ADMIN_EMAIL:?ADMIN_EMAIL is required (Google Workspace super-admin email)}"
+: "${OUTTHINK_ORG_ID:?OUTTHINK_ORG_ID is required (OutThink organisation UUID)}"
+: "${OUTTHINK_SCIM_TOKEN:?OUTTHINK_SCIM_TOKEN is required (OutThink SCIM bearer token)}"
+OUTTHINK_REGION="${OUTTHINK_REGION:-eu}"
 
-if [ -z "$PROJECT" ]; then
-  echo ""
-  echo "A dedicated GCP project is recommended for the sync agent."
-  echo "Suggested project ID (must be globally unique, lowercase, hyphens only):"
-  echo ""
-  read -rp "New project ID [e.g. acme-gws-sync]: " PROJECT
-  [ -z "$PROJECT" ] && { echo "Project ID required."; exit 1; }
+case "$OUTTHINK_REGION" in
+  us) SCIM_BASE_URL="https://us.api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2" ;;
+  *)  SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2" ;;
+esac
+SCIM_TOKEN="$OUTTHINK_SCIM_TOKEN"
 
-  echo "Creating project $PROJECT..."
+# ── Resolve billing account ──────────────────────────────────────────────────
+# GCP project IDs are globally unique — derive a stable per-customer suffix
+# from the billing account ID so two customers never collide.
+BILLING_ACCOUNT=$(gcloud billing accounts list \
+  --filter="open=true" \
+  --format="value(name)" \
+  --limit=1 2>/dev/null || true)
+if [ -z "$BILLING_ACCOUNT" ]; then
+  echo "Error: no open billing accounts accessible."
+  echo "       Grant this identity roles/billing.user and re-run."
+  exit 1
+fi
+BA_SUFFIX=$(echo "$BILLING_ACCOUNT" | tr '[:upper:]' '[:lower:]' | awk -F'-' '{print $NF}')
+PROJECT="${PROJECT:-outthink-gws-sync-${BA_SUFFIX}}"
+
+# ── Create project (idempotent) ──────────────────────────────────────────────
+if gcloud projects describe "$PROJECT" --quiet &>/dev/null; then
+  echo "✓ Project exists: $PROJECT"
+else
   gcloud projects create "$PROJECT" \
-    --name="OutThink Workspace Sync" 2>/dev/null || true
-
-  BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
-  if [ -z "$BILLING_ACCOUNT" ]; then
-    echo ""
-    echo "Available billing accounts:"
-    gcloud billing accounts list --format="table(name.segment(1),displayName,open)" 2>/dev/null
-    echo ""
-    read -rp "Billing account ID (from the 'name' column above): " BILLING_ACCOUNT
-  fi
-
-  gcloud billing projects link "$PROJECT" \
-    --billing-account="$BILLING_ACCOUNT"
-  echo "✓ Billing linked"
+    --name="OutThink Workspace Sync" --quiet
+  echo "✓ Project created: $PROJECT"
 fi
 
 gcloud config set project "$PROJECT" --quiet
@@ -39,29 +47,16 @@ echo "Project : $PROJECT"
 echo "Image   : $IMAGE"
 echo ""
 
-# ── Guard: already deployed ─────────────────────────────────────────────────
-if gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT" &>/dev/null; then
-  echo "⚠  The agent is already deployed in this project."
-  echo "   Use the Operations pages in this tutorial for ongoing tasks"
-  echo "   (manual sync, debug mode, logs, token rotation, etc.)."
-  echo ""
-  exit 0
+# ── Link billing (idempotent) ────────────────────────────────────────────────
+BILLING_ENABLED=$(gcloud billing projects describe "$PROJECT" \
+  --format="value(billingEnabled)" 2>/dev/null || echo "False")
+if [ "$BILLING_ENABLED" = "True" ]; then
+  echo "✓ Billing already enabled"
+else
+  gcloud billing projects link "$PROJECT" \
+    --billing-account="$BILLING_ACCOUNT" --quiet
+  echo "✓ Billing linked: $BILLING_ACCOUNT"
 fi
-
-# ── Collect inputs ──────────────────────────────────────────────────────────
-ADMIN_EMAIL="${ADMIN_EMAIL:-}"
-ORG_ID="${OUTTHINK_ORG_ID:-}"
-SCIM_TOKEN="${OUTTHINK_SCIM_TOKEN:-}"
-OUTTHINK_REGION="${OUTTHINK_REGION:-eu}"
-
-[ -z "$ADMIN_EMAIL" ] && read -rp  "Google Workspace admin email: " ADMIN_EMAIL
-[ -z "$ORG_ID" ]      && read -rp  "OutThink Organisation ID: " ORG_ID
-[ -z "$SCIM_TOKEN" ]  && read -rsp "OutThink SCIM token: " SCIM_TOKEN && echo
-
-case "$OUTTHINK_REGION" in
-  us) SCIM_BASE_URL="https://us.api.outthink.io/scim/Organizations/${ORG_ID}/v2" ;;
-  *)  SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${ORG_ID}/v2" ;;
-esac
 
 # ── Enable required APIs ────────────────────────────────────────────────────
 echo ""
@@ -98,7 +93,7 @@ if gsutil ls "gs://${BUCKET}" &>/dev/null; then
   echo "✓ Checkpoint bucket already exists — skipping"
 else
   echo "Creating checkpoint bucket..."
-  gsutil mb -p "$PROJECT" "gs://${BUCKET}"
+  gsutil mb -l "$REGION" -p "$PROJECT" "gs://${BUCKET}"
   echo "✓ Bucket created: gs://${BUCKET}"
 fi
 
