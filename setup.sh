@@ -5,15 +5,32 @@ JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 AR_REPO="outthink-sync-agent"
 
-PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
+PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-}}"
 
 if [ -z "$PROJECT" ]; then
   echo ""
-  echo "Your GCP projects:"
-  gcloud projects list --format="value(projectId)" 2>/dev/null
+  echo "A dedicated GCP project is recommended for the sync agent."
+  echo "Suggested project ID (must be globally unique, lowercase, hyphens only):"
   echo ""
-  read -rp "Enter Project ID: " PROJECT
-  gcloud config set project "$PROJECT" --quiet
+  read -rp "New project ID [e.g. acme-gws-sync]: " PROJECT
+  [ -z "$PROJECT" ] && { echo "Project ID required."; exit 1; }
+
+  echo "Creating project $PROJECT..."
+  gcloud projects create "$PROJECT" \
+    --name="OutThink Workspace Sync" 2>/dev/null || true
+
+  BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
+  if [ -z "$BILLING_ACCOUNT" ]; then
+    echo ""
+    echo "Available billing accounts:"
+    gcloud billing accounts list --format="table(name.segment(1),displayName,open)" 2>/dev/null
+    echo ""
+    read -rp "Billing account ID (from the 'name' column above): " BILLING_ACCOUNT
+  fi
+
+  gcloud billing projects link "$PROJECT" \
+    --billing-account="$BILLING_ACCOUNT"
+  echo "✓ Billing linked"
 fi
 
 gcloud config set project "$PROJECT" --quiet
