@@ -37,9 +37,12 @@ DISPLAY=$(gcloud billing accounts list \
   --filter="open=true" \
   --format="value(displayName)" \
   --limit=1 2>/dev/null || true)
+# Max slug length: 30 (GCP limit) - 13 (prefix) - 1 (sep) - 4 (tail) = 12
+# Strip any partial word left by the cut so the name never ends mid-word.
 SLUG=$(echo "$DISPLAY" | tr '[:upper:]' '[:lower:]' \
   | sed 's/[^a-z0-9]/-/g; s/-\+/-/g; s/^-//; s/-$//' \
-  | cut -c1-10)
+  | cut -c1-12 \
+  | sed 's/-[^-]*$//')
 BA_TAIL=$(echo "$BILLING_ACCOUNT" | tr -d '-' | tr '[:upper:]' '[:lower:]' | rev | cut -c1-4 | rev)
 if [ -n "$SLUG" ]; then
   PROJECT="${PROJECT:-outthink-gws-${SLUG}-${BA_TAIL}}"
