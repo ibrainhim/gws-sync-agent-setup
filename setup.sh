@@ -1,10 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# NOTE: Replace IMAGE with the real Artifact Registry path before production use.
-IMAGE="gcr.io/cloudrun/hello"   # placeholder — swap with real image on first real deploy
 JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
+AR_REPO="outthink-sync-agent"
 
 PROJECT="${DEVSHELL_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
 
@@ -18,7 +17,9 @@ if [ -z "$PROJECT" ]; then
 fi
 
 gcloud config set project "$PROJECT" --quiet
-echo "Project: $PROJECT"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/agent:latest"
+echo "Project : $PROJECT"
+echo "Image   : $IMAGE"
 echo ""
 
 # ── Guard: already deployed ─────────────────────────────────────────────────
@@ -55,6 +56,7 @@ gcloud services enable \
   cloudscheduler.googleapis.com \
   iamcredentials.googleapis.com \
   secretmanager.googleapis.com \
+  artifactregistry.googleapis.com \
   --project="$PROJECT" --quiet
 echo "✓ APIs enabled"
 
@@ -83,7 +85,7 @@ else
   echo "✓ Bucket created: gs://${BUCKET}"
 fi
 
-gsutil iam ch "serviceAccount:${SA_EMAIL}:roles/storage.objectUser" "gs://${BUCKET}"
+gsutil iam ch "serviceAccount:${SA_EMAIL}:roles/storage.objectAdmin" "gs://${BUCKET}"
 echo "✓ Bucket permissions set"
 
 # ── Store SCIM token in Secret Manager ─────────────────────────────────────
@@ -101,22 +103,45 @@ gcloud secrets add-iam-policy-binding outthink-scim-token \
   --project="$PROJECT" --quiet
 echo "✓ SCIM token stored in Secret Manager"
 
+# ── Artifact Registry repository ────────────────────────────────────────────
+if gcloud artifacts repositories describe "$AR_REPO" \
+     --location="$REGION" --project="$PROJECT" &>/dev/null; then
+  echo "✓ Artifact Registry repository already exists — skipping"
+else
+  echo "Creating Artifact Registry repository..."
+  gcloud artifacts repositories create "$AR_REPO" \
+    --repository-format=docker \
+    --location="$REGION" \
+    --description="OutThink GWS Sync Agent container images" \
+    --project="$PROJECT"
+  echo "✓ Artifact Registry repository created"
+fi
+
+gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" \
+  --location="$REGION" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/artifactregistry.reader" \
+  --project="$PROJECT" --quiet
+echo "✓ Artifact Registry permissions set"
+
 # ── Deploy Cloud Run Job ────────────────────────────────────────────────────
 echo "Deploying Cloud Run Job..."
 gcloud run jobs deploy "$JOB_NAME" \
   --image="$IMAGE" \
   --region="$REGION" \
   --service-account="$SA_EMAIL" \
-  --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=INFO,DRY_RUN=false" \
+  --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=INFO,DRY_RUN=false,SYNC_INTERVAL_HOURS=12,RECONCILIATION_INTERVAL_HOURS=24,LOCK_STALE_THRESHOLD_SECONDS=7200" \
   --set-secrets="SCIM_TOKEN=outthink-scim-token:latest" \
   --project="$PROJECT"
 echo "✓ Cloud Run Job deployed"
 
 # ── Create Cloud Scheduler trigger ─────────────────────────────────────────
-echo "Setting up Cloud Scheduler (every 12 hours)..."
-gcloud scheduler jobs create http "${JOB_NAME}-sync" \
+# Fires every 2h (scheduler cadence). The agent decides what to run based on
+# checkpoint timestamps and SYNC_INTERVAL_HOURS / RECONCILIATION_INTERVAL_HOURS.
+echo "Setting up Cloud Scheduler (every 2 hours)..."
+gcloud scheduler jobs create http "${JOB_NAME}-scheduler" \
   --location="$REGION" \
-  --schedule="0 */12 * * *" \
+  --schedule="0 */2 * * *" \
   --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/${JOB_NAME}:run" \
   --oauth-service-account-email="$SA_EMAIL" \
   --project="$PROJECT" 2>/dev/null || echo "✓ Scheduler already exists — skipping"
@@ -130,7 +155,18 @@ echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  ✓ Setup complete."
 echo ""
-echo "  FINAL STEP — Domain-Wide Delegation"
+echo "  STEP 1 — Build and push the container image"
+echo ""
+echo "  gcloud auth configure-docker ${REGION}-docker.pkg.dev"
+echo "  docker build -t ${IMAGE} ."
+echo "  docker push ${IMAGE}"
+echo ""
+echo "  Then update the job with the pushed image:"
+echo "  gcloud run jobs update ${JOB_NAME} \\"
+echo "    --image=${IMAGE} \\"
+echo "    --region=${REGION} --project=${PROJECT}"
+echo ""
+echo "  STEP 2 — Domain-Wide Delegation"
 echo "  Send this to your Google Workspace admin:"
 echo ""
 echo "  Client ID : $CLIENT_ID"
@@ -139,4 +175,9 @@ echo "              https://www.googleapis.com/auth/admin.reports.audit.readonly
 echo ""
 echo "  Instructions: admin.google.com → Security → API controls"
 echo "                → Domain-wide delegation → Add new"
+echo ""
+echo "  STEP 3 — Verify auth chain"
+echo "  gcloud run jobs execute ${JOB_NAME} \\"
+echo "    --region=${REGION} --project=${PROJECT} \\"
+echo "    --args=check-auth"
 echo "════════════════════════════════════════════════════════════"
