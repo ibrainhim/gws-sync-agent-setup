@@ -8,8 +8,10 @@ AR_REPO="outthink-sync-agent"
 # ── Required inputs ──────────────────────────────────────────────────────────
 : "${GCP_PROJECT:?GCP_PROJECT is required}"
 : "${ADMIN_EMAIL:?ADMIN_EMAIL is required (Google Workspace super-admin email)}"
-: "${SCIM_BASE_URL:?SCIM_BASE_URL is required (OutThink SCIM endpoint)}"
+: "${OUTTHINK_ORG_ID:?OUTTHINK_ORG_ID is required (OutThink organisation UUID)}"
 : "${SCIM_TOKEN:?SCIM_TOKEN is required (OutThink SCIM bearer token)}"
+
+SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2"
 
 PROJECT="$GCP_PROJECT"
 
