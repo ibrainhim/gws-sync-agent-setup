@@ -6,7 +6,7 @@ Deploy and manage the OutThink Google Workspace Sync Agent in your GCP project.
 
 Click the button below. A pre-authenticated terminal opens in your browser inside your GCP project — no local tools needed.
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/ibrainhim/gws-sync-agent-setup&cloudshell_tutorial=docs/cloudshell-setup.md)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/ibrainhim/gws-sync-agent-setup&cloudshell_tutorial=tutorial.md)
 
 ## What this does
 

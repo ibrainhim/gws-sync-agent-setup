@@ -1,11 +1,6 @@
 # OutThink Google Workspace Sync Agent
 
-Welcome. Before we begin, select the GCP project you want to deploy into.
-
-Use the dropdown below to find your project, then click **Set Project**.
-Once set, click **Next** to continue.
-
-<walkthrough-project-setup billing="true"></walkthrough-project-setup>
+Welcome. All required values were passed via the setup link — you don't need to enter anything manually.
 
 ---
 
@@ -13,16 +8,11 @@ Once set, click **Next** to continue.
 
 **Step 1 — Run setup**
 
-Runs once. Safe to click again — the script detects an existing deployment and stops.
+Runs once. Safe to run again — the script detects an existing deployment and skips already-created resources.
 
 ```bash
 bash setup.sh
 ```
-
-You will be asked for:
-- Your Google Workspace super-admin email
-- Your OutThink Organisation ID (OutThink admin panel → Settings → SCIM Integration)
-- Your OutThink SCIM token
 
 After the script completes, a **Client ID** will be printed. Send it to your Google Workspace
 admin to complete Domain-Wide Delegation (exact instructions are printed by the script).

@@ -5,79 +5,41 @@ JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 AR_REPO="outthink-sync-agent"
 
-# ── Required inputs (must be set in the environment — no prompts) ────────────
+# ── Required inputs ──────────────────────────────────────────────────────────
+: "${GCP_PROJECT:?GCP_PROJECT is required}"
 : "${ADMIN_EMAIL:?ADMIN_EMAIL is required (Google Workspace super-admin email)}"
-: "${OUTTHINK_ORG_ID:?OUTTHINK_ORG_ID is required (OutThink organisation UUID)}"
-: "${OUTTHINK_SCIM_TOKEN:?OUTTHINK_SCIM_TOKEN is required (OutThink SCIM bearer token)}"
-OUTTHINK_REGION="${OUTTHINK_REGION:-eu}"
+: "${SCIM_BASE_URL:?SCIM_BASE_URL is required (OutThink SCIM endpoint)}"
+: "${SCIM_TOKEN:?SCIM_TOKEN is required (OutThink SCIM bearer token)}"
 
-case "$OUTTHINK_REGION" in
-  us) SCIM_BASE_URL="https://us.api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2" ;;
-  *)  SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2" ;;
-esac
-SCIM_TOKEN="$OUTTHINK_SCIM_TOKEN"
+PROJECT="$GCP_PROJECT"
 
-# ── Resolve billing account ──────────────────────────────────────────────────
-# GCP project IDs are globally unique — derive a stable per-customer suffix
-# from the billing account ID so two customers never collide.
-BILLING_ACCOUNT=$(gcloud billing accounts list \
-  --filter="open=true" \
-  --format="value(name)" \
-  --limit=1 2>/dev/null || true)
-if [ -z "$BILLING_ACCOUNT" ]; then
-  echo "Error: no open billing accounts accessible."
-  echo "       Grant this identity roles/billing.user and re-run."
-  exit 1
-fi
-# Derive a human-readable project ID from the billing account display name
-# (visible in GCP console and billing dashboards).
-# Format: outthink-gws-<company-slug>-<4-char-ba-tail>
-# e.g.   outthink-gws-acme-corp-a1b2  (≤ 30 chars, GCP project ID limit)
-DISPLAY=$(gcloud billing accounts list \
-  --filter="open=true" \
-  --format="value(displayName)" \
-  --limit=1 2>/dev/null || true)
-# Max slug length: 30 (GCP limit) - 13 (prefix) - 1 (sep) - 4 (tail) = 12
-# Strip any partial word left by the cut so the name never ends mid-word.
-SLUG=$(echo "$DISPLAY" | tr '[:upper:]' '[:lower:]' \
-  | sed 's/[^a-z0-9]/-/g; s/-\+/-/g; s/^-//; s/-$//' \
-  | cut -c1-12 \
-  | sed 's/-[^-]*$//')
-BA_TAIL=$(echo "$BILLING_ACCOUNT" | tr -d '-' | tr '[:upper:]' '[:lower:]' | rev | cut -c1-4 | rev)
-if [ -n "$SLUG" ]; then
-  PROJECT="${PROJECT:-outthink-gws-${SLUG}-${BA_TAIL}}"
-else
-  PROJECT="${PROJECT:-outthink-gws-${BA_TAIL}}"
-fi
-
-# ── Create project (idempotent) ──────────────────────────────────────────────
-if gcloud projects describe "$PROJECT" --quiet &>/dev/null; then
-  echo "✓ Project exists: $PROJECT"
-else
-  gcloud projects create "$PROJECT" \
-    --name="OutThink Workspace Sync" --quiet
-  echo "✓ Project created: $PROJECT"
-fi
+SA_NAME="outthink-sync-agent"
+SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+BUCKET="${PROJECT}-outthink-sync-checkpoint"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/agent:latest"
 
 gcloud config set project "$PROJECT" --quiet
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/agent:latest"
-echo "Project : $PROJECT"
-echo "Image   : $IMAGE"
-echo ""
 
-# ── Link billing (idempotent) ────────────────────────────────────────────────
+echo "──────────────────────────────────────────────────────"
+echo "  OutThink GWS Sync Agent — setup"
+echo "  Project : $PROJECT"
+echo "  Region  : $REGION"
+echo "──────────────────────────────────────────────────────"
+
+# ── Preflight: billing must be enabled ───────────────────────────────────────
 BILLING_ENABLED=$(gcloud billing projects describe "$PROJECT" \
   --format="value(billingEnabled)" 2>/dev/null || echo "False")
-if [ "$BILLING_ENABLED" = "True" ]; then
-  echo "✓ Billing already enabled"
-else
-  gcloud billing projects link "$PROJECT" \
-    --billing-account="$BILLING_ACCOUNT" --quiet
-  echo "✓ Billing linked: $BILLING_ACCOUNT"
+if [[ "$BILLING_ENABLED" != "True" ]]; then
+  echo ""
+  echo "ERROR: Billing is not enabled on project '$PROJECT'."
+  echo "  Enable it at:"
+  echo "  https://console.cloud.google.com/billing/linkedaccount?project=${PROJECT}"
+  echo ""
+  exit 1
 fi
+echo "✓ Billing enabled"
 
-# ── Enable required APIs ────────────────────────────────────────────────────
-echo ""
+# ── Enable required APIs ──────────────────────────────────────────────────────
 echo "Enabling required APIs..."
 gcloud services enable \
   admin.googleapis.com \
@@ -90,10 +52,7 @@ gcloud services enable \
   --project="$PROJECT" --quiet
 echo "✓ APIs enabled"
 
-# ── Create service account ──────────────────────────────────────────────────
-SA_NAME="outthink-sync-agent"
-SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
-
+# ── Service account ───────────────────────────────────────────────────────────
 if gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT" &>/dev/null; then
   echo "✓ Service account already exists — skipping"
 else
@@ -104,38 +63,56 @@ else
   echo "✓ Service account created: $SA_EMAIL"
 fi
 
-# ── Create checkpoint bucket ────────────────────────────────────────────────
-BUCKET="${PROJECT}-outthink-sync-checkpoint"
+# Allow the SA to sign tokens for itself (required for DWD credential exchange)
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/iam.serviceAccountTokenCreator" \
+  --project="$PROJECT" --quiet
 
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/logging.logWriter" --quiet
+
+echo "✓ Service account permissions set"
+
+# ── Checkpoint bucket ─────────────────────────────────────────────────────────
 if gsutil ls "gs://${BUCKET}" &>/dev/null; then
   echo "✓ Checkpoint bucket already exists — skipping"
 else
   echo "Creating checkpoint bucket..."
-  gsutil mb -l "$REGION" -p "$PROJECT" "gs://${BUCKET}"
+  gcloud storage buckets create "gs://${BUCKET}" \
+    --location="$REGION" \
+    --uniform-bucket-level-access \
+    --project="$PROJECT" --quiet
   echo "✓ Bucket created: gs://${BUCKET}"
 fi
 
-gsutil iam ch "serviceAccount:${SA_EMAIL}:roles/storage.objectAdmin" "gs://${BUCKET}"
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/storage.objectAdmin" --quiet
 echo "✓ Bucket permissions set"
 
-# ── Store SCIM token in Secret Manager ─────────────────────────────────────
-echo "Storing SCIM token in Secret Manager..."
+# ── SCIM token in Secret Manager ─────────────────────────────────────────────
 if gcloud secrets describe outthink-scim-token --project="$PROJECT" &>/dev/null; then
   echo -n "$SCIM_TOKEN" | gcloud secrets versions add outthink-scim-token \
-    --data-file=- --project="$PROJECT"
+    --data-file=- --project="$PROJECT" --quiet
+  echo "✓ SCIM token updated in Secret Manager"
 else
   echo -n "$SCIM_TOKEN" | gcloud secrets create outthink-scim-token \
-    --data-file=- --project="$PROJECT"
+    --data-file=- \
+    --replication-policy=automatic \
+    --project="$PROJECT" --quiet
+  echo "✓ SCIM token stored in Secret Manager"
 fi
+
 gcloud secrets add-iam-policy-binding outthink-scim-token \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/secretmanager.secretAccessor" \
   --project="$PROJECT" --quiet
-echo "✓ SCIM token stored in Secret Manager"
 
-# ── Artifact Registry repository ────────────────────────────────────────────
+# ── Artifact Registry ─────────────────────────────────────────────────────────
 if gcloud artifacts repositories describe "$AR_REPO" \
-     --location="$REGION" --project="$PROJECT" &>/dev/null; then
+    --location="$REGION" --project="$PROJECT" &>/dev/null; then
   echo "✓ Artifact Registry repository already exists — skipping"
 else
   echo "Creating Artifact Registry repository..."
@@ -143,7 +120,7 @@ else
     --repository-format=docker \
     --location="$REGION" \
     --description="OutThink GWS Sync Agent container images" \
-    --project="$PROJECT"
+    --project="$PROJECT" --quiet
   echo "✓ Artifact Registry repository created"
 fi
 
@@ -154,30 +131,35 @@ gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" \
   --project="$PROJECT" --quiet
 echo "✓ Artifact Registry permissions set"
 
-# ── Deploy Cloud Run Job ────────────────────────────────────────────────────
+# ── Cloud Run Job ─────────────────────────────────────────────────────────────
 echo "Deploying Cloud Run Job..."
 gcloud run jobs deploy "$JOB_NAME" \
   --image="$IMAGE" \
   --region="$REGION" \
   --service-account="$SA_EMAIL" \
+  --task-timeout=14400s \
   --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=INFO,DRY_RUN=false,SYNC_INTERVAL_HOURS=12,RECONCILIATION_INTERVAL_HOURS=24,LOCK_STALE_THRESHOLD_SECONDS=7200" \
   --set-secrets="SCIM_TOKEN=outthink-scim-token:latest" \
-  --project="$PROJECT"
+  --project="$PROJECT" --quiet
 echo "✓ Cloud Run Job deployed"
 
-# ── Create Cloud Scheduler trigger ─────────────────────────────────────────
-# Fires every 2h (scheduler cadence). The agent decides what to run based on
-# checkpoint timestamps and SYNC_INTERVAL_HOURS / RECONCILIATION_INTERVAL_HOURS.
-echo "Setting up Cloud Scheduler (every 2 hours)..."
-gcloud scheduler jobs create http "${JOB_NAME}-scheduler" \
-  --location="$REGION" \
-  --schedule="0 */2 * * *" \
-  --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/${JOB_NAME}:run" \
-  --oauth-service-account-email="$SA_EMAIL" \
-  --project="$PROJECT" 2>/dev/null || echo "✓ Scheduler already exists — skipping"
-echo "✓ Cloud Scheduler configured"
+# ── Cloud Scheduler ───────────────────────────────────────────────────────────
+SCHEDULER_JOB="${JOB_NAME}-scheduler"
+if gcloud scheduler jobs describe "$SCHEDULER_JOB" \
+    --location="$REGION" --project="$PROJECT" &>/dev/null; then
+  echo "✓ Cloud Scheduler already configured — skipping"
+else
+  echo "Setting up Cloud Scheduler (every 2 hours)..."
+  gcloud scheduler jobs create http "$SCHEDULER_JOB" \
+    --location="$REGION" \
+    --schedule="0 */2 * * *" \
+    --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/${JOB_NAME}:run" \
+    --oauth-service-account-email="$SA_EMAIL" \
+    --project="$PROJECT" --quiet
+  echo "✓ Cloud Scheduler configured"
+fi
 
-# ── Print client ID ─────────────────────────────────────────────────────────
+# ── Print client ID for DWD ───────────────────────────────────────────────────
 CLIENT_ID=$(gcloud iam service-accounts describe "$SA_EMAIL" \
   --format="value(oauth2ClientId)" --project="$PROJECT")
 
