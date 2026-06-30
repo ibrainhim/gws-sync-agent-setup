@@ -5,11 +5,30 @@ JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
 AR_REPO="outthink-sync-agent"
 
+# ── Parse CLI flags (override env vars if provided) ──────────────────────────
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --gcp-project)            GCP_PROJECT="$2";              shift 2 ;;
+    --admin-email)            ADMIN_EMAIL="$2";              shift 2 ;;
+    --org-id)                 OUTTHINK_ORG_ID="$2";          shift 2 ;;
+    --scim-token)             SCIM_TOKEN="$2";               shift 2 ;;
+    --sync-interval)          SYNC_INTERVAL_HOURS="$2";      shift 2 ;;
+    --recon-interval)         RECONCILIATION_INTERVAL_HOURS="$2"; shift 2 ;;
+    --log-level)              LOG_LEVEL="$2";                shift 2 ;;
+    *) echo "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
 # ── Required inputs ──────────────────────────────────────────────────────────
-: "${GCP_PROJECT:?GCP_PROJECT is required}"
-: "${ADMIN_EMAIL:?ADMIN_EMAIL is required (Google Workspace super-admin email)}"
-: "${OUTTHINK_ORG_ID:?OUTTHINK_ORG_ID is required (OutThink organisation UUID)}"
-: "${SCIM_TOKEN:?SCIM_TOKEN is required (OutThink SCIM bearer token)}"
+: "${GCP_PROJECT:?--gcp-project is required}"
+: "${ADMIN_EMAIL:?--admin-email is required (Google Workspace super-admin email)}"
+: "${OUTTHINK_ORG_ID:?--org-id is required (OutThink organisation UUID)}"
+: "${SCIM_TOKEN:?--scim-token is required (OutThink SCIM bearer token)}"
+
+# ── Optional inputs with defaults ────────────────────────────────────────────
+SYNC_INTERVAL_HOURS="${SYNC_INTERVAL_HOURS:-12}"
+RECONCILIATION_INTERVAL_HOURS="${RECONCILIATION_INTERVAL_HOURS:-24}"
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2"
 
@@ -140,7 +159,7 @@ gcloud run jobs deploy "$JOB_NAME" \
   --region="$REGION" \
   --service-account="$SA_EMAIL" \
   --task-timeout=14400s \
-  --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=INFO,DRY_RUN=false,SYNC_INTERVAL_HOURS=12,RECONCILIATION_INTERVAL_HOURS=24,LOCK_STALE_THRESHOLD_SECONDS=7200" \
+  --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=${LOG_LEVEL},DRY_RUN=false,SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS},RECONCILIATION_INTERVAL_HOURS=${RECONCILIATION_INTERVAL_HOURS},LOCK_STALE_THRESHOLD_SECONDS=7200" \
   --set-secrets="SCIM_TOKEN=outthink-scim-token:latest" \
   --project="$PROJECT" --quiet
 echo "✓ Cloud Run Job deployed"
