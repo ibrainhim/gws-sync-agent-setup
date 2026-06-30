@@ -3,7 +3,7 @@ set -euo pipefail
 
 JOB_NAME="outthink-sync-agent"
 REGION="europe-west1"
-AR_REPO="outthink-sync-agent"
+IMAGE="europe-docker.pkg.dev/outthink-platform/gws-sync-agent/agent:latest"
 
 # ── Colors & UI helpers ───────────────────────────────────────────────────────
 RESET='\033[0m'
@@ -54,7 +54,6 @@ PROJECT="$GCP_PROJECT"
 SA_NAME="outthink-sync-agent"
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 BUCKET="${PROJECT}-outthink-sync-checkpoint"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/agent:latest"
 
 gcloud config set project "$PROJECT" --quiet 2>/dev/null
 
@@ -160,28 +159,6 @@ gcloud secrets add-iam-policy-binding outthink-scim-token \
   --role="roles/secretmanager.secretAccessor" \
   --project="$PROJECT" --quiet
 
-# ── Artifact Registry ─────────────────────────────────────────────────────────
-section "Artifact Registry"
-
-if gcloud artifacts repositories describe "$AR_REPO" \
-    --location="$REGION" --project="$PROJECT" &>/dev/null; then
-  info "Already exists — skipping creation"
-else
-  gcloud artifacts repositories create "$AR_REPO" \
-    --repository-format=docker \
-    --location="$REGION" \
-    --description="OutThink GWS Sync Agent container images" \
-    --project="$PROJECT" --quiet
-  ok "Repository created"
-fi
-
-gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" \
-  --location="$REGION" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/artifactregistry.reader" \
-  --project="$PROJECT" --quiet
-ok "Permissions set"
-
 # ── Cloud Run Job ─────────────────────────────────────────────────────────────
 section "Cloud Run Job"
 
@@ -221,15 +198,7 @@ echo -e "  ${GREEN}${BOLD}╭─────────────────
 echo -e "  ${GREEN}${BOLD}│   ✓  Setup complete                             │${RESET}"
 echo -e "  ${GREEN}${BOLD}╰─────────────────────────────────────────────────╯${RESET}"
 
-section "Step 1 — Build & push the container image"
-echo -e "  ${DIM}gcloud auth configure-docker ${REGION}-docker.pkg.dev${RESET}"
-echo -e "  ${DIM}docker build -t ${IMAGE} .${RESET}"
-echo -e "  ${DIM}docker push ${IMAGE}${RESET}"
-echo ""
-echo -e "  ${DIM}Then update the job:${RESET}"
-echo -e "  ${DIM}gcloud run jobs update ${JOB_NAME} --image=${IMAGE} --region=${REGION}${RESET}"
-
-section "Step 2 — Domain-Wide Delegation"
+section "Step 1 — Domain-Wide Delegation"
 echo -e "  Send these to your Google Workspace admin:"
 echo ""
 echo -e "  ${BOLD}Client ID${RESET}  ${CYAN}${CLIENT_ID}${RESET}"
@@ -242,7 +211,7 @@ echo -e "  ${DIM}https://www.googleapis.com/auth/admin.reports.audit.readonly${R
 echo ""
 echo -e "  ${DIM}admin.google.com → Security → API controls → Domain-wide delegation → Add new${RESET}"
 
-section "Step 3 — Verify"
+section "Step 2 — Verify"
 echo -e "  ${DIM}gcloud run jobs execute ${JOB_NAME} \\${RESET}"
 echo -e "  ${DIM}  --region=${REGION} --project=${PROJECT} \\${RESET}"
 echo -e "  ${DIM}  --args=check-auth${RESET}"
