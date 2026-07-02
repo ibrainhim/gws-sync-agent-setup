@@ -2,7 +2,7 @@
 set -euo pipefail
 
 JOB_NAME="outthink-sync-agent"
-REGION="europe-west1"
+OUTTHINK_AGENT_ENDPOINT="https://app.outthink.io/gws-agent/v1"
 
 # ── Colors & UI helpers ───────────────────────────────────────────────────────
 RESET='\033[0m'; BOLD='\033[1m'; DIM='\033[2m'
@@ -17,12 +17,26 @@ section() {
   echo -e "  ${DIM}$(printf '%.0s─' {1..48})${RESET}"
 }
 
+# ── Call-home reporting ───────────────────────────────────────────────────────
+report_event() {
+  local event_type="$1"
+  local code="$2"
+  local message="$3"
+  [[ -z "${AGENT_KEY:-}" ]] && return 0
+  curl -sf -X POST "${OUTTHINK_AGENT_ENDPOINT}/events" \
+    -H "Authorization: Bearer ${AGENT_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"event_type\":\"${event_type}\",\"code\":\"${code}\",\"message\":\"${message}\"}" \
+    2>/dev/null || true
+}
+
 # ── Parse CLI flags ───────────────────────────────────────────────────────────
 DELETE_BUCKET=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --gcp-project)    GCP_PROJECT="$2"; shift 2 ;;
+    --agent-key)      AGENT_KEY="$2";   shift 2 ;;
     --region)         REGION="$2";      shift 2 ;;
     --delete-bucket)  DELETE_BUCKET=true; shift ;;
     *) echo "Unknown argument: $1"; exit 1 ;;
@@ -30,6 +44,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 : "${GCP_PROJECT:?--gcp-project is required}"
+
+REGION="${REGION:-europe-west1}"
 
 PROJECT="$GCP_PROJECT"
 SA_NAME="outthink-sync-agent"
@@ -51,6 +67,8 @@ echo -e "  ${DIM}Project   ${RESET}${CYAN}${PROJECT}${RESET}"
 echo -e "  ${DIM}Region    ${RESET}${CYAN}${REGION}${RESET}"
 echo ""
 echo -e "  ${YELLOW}This will permanently delete the sync agent and all its GCP resources.${RESET}"
+
+report_event "teardown.started" "TEARDOWN_STARTED" "Teardown started for project ${PROJECT} in ${REGION}"
 echo ""
 read -rp "  Type the project ID to confirm: " CONFIRM
 if [[ "$CONFIRM" != "$PROJECT" ]]; then
@@ -85,7 +103,7 @@ fi
 # ── Secrets ───────────────────────────────────────────────────────────────────
 section "Secrets"
 
-for secret in outthink-scim-token outthink-agent-key; do
+for secret in outthink-agent-key; do
   if gcloud secrets describe "$secret" --project="$PROJECT" &>/dev/null; then
     gcloud secrets delete "$secret" --project="$PROJECT" --quiet
     ok "Deleted secret: $secret"
@@ -126,9 +144,15 @@ else
   skipped "$SA_EMAIL"
 fi
 
+# ── Deregister ───────────────────────────────────────────────────────────────
+report_event "teardown.completed" "TEARDOWN_OK" "Teardown complete for project ${PROJECT}"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${GREEN}${BOLD}╭─────────────────────────────────────────────────╮${RESET}"
 echo -e "  ${GREEN}${BOLD}│   ✓  Teardown complete                          │${RESET}"
 echo -e "  ${GREEN}${BOLD}╰─────────────────────────────────────────────────╯${RESET}"
+echo ""
+echo -e "  ${DIM}Remove the Domain-Wide Delegation grant from Google Admin:${RESET}"
+echo -e "  ${DIM}admin.google.com → Security → API controls → Domain-wide delegation${RESET}"
 echo ""

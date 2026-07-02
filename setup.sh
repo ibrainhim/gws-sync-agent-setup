@@ -2,8 +2,7 @@
 set -euo pipefail
 
 JOB_NAME="outthink-sync-agent"
-REGION="europe-west1"
-IMAGE="europe-docker.pkg.dev/outthink-platform/gws-sync-agent/agent:latest"
+OUTTHINK_AGENT_ENDPOINT="https://app.outthink.io/gws-agent/v1"
 
 # ── Colors & UI helpers ───────────────────────────────────────────────────────
 RESET='\033[0m'
@@ -15,25 +14,35 @@ YELLOW='\033[33m'
 CYAN='\033[36m'
 WHITE='\033[97m'
 
-ok()   { echo -e "  ${GREEN}✓${RESET}  $1"; }
-fail() { echo -e "  ${RED}✗${RESET}  ${RED}$1${RESET}"; }
-info() { echo -e "  ${DIM}·${RESET}  ${DIM}$1${RESET}"; }
+ok()      { echo -e "  ${GREEN}✓${RESET}  $1"; }
+fail()    { echo -e "  ${RED}✗${RESET}  ${RED}$1${RESET}"; }
+info()    { echo -e "  ${DIM}·${RESET}  ${DIM}$1${RESET}"; }
 section() {
   echo ""
   echo -e "  ${BOLD}${WHITE}$1${RESET}"
   echo -e "  ${DIM}$(printf '%.0s─' {1..48})${RESET}"
 }
 
+# ── Call-home reporting ───────────────────────────────────────────────────────
+report_event() {
+  local event_type="$1"
+  local code="$2"
+  local message="$3"
+  [[ -z "${AGENT_KEY:-}" ]] && return 0
+  curl -sf -X POST "${OUTTHINK_AGENT_ENDPOINT}/events" \
+    -H "Authorization: Bearer ${AGENT_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"event_type\":\"${event_type}\",\"code\":\"${code}\",\"message\":\"${message}\"}" \
+    2>/dev/null || true
+}
+
 # ── Parse CLI flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --gcp-project)    GCP_PROJECT="$2";                    shift 2 ;;
-    --admin-email)    ADMIN_EMAIL="$2";                    shift 2 ;;
-    --org-id)         OUTTHINK_ORG_ID="$2";                shift 2 ;;
-    --scim-token)     SCIM_TOKEN="$2";                     shift 2 ;;
-    --sync-interval)  SYNC_INTERVAL_HOURS="$2";            shift 2 ;;
-    --recon-interval) RECONCILIATION_INTERVAL_HOURS="$2";  shift 2 ;;
-    --log-level)      LOG_LEVEL="$2";                      shift 2 ;;
+    --gcp-project)  GCP_PROJECT="$2"; shift 2 ;;
+    --admin-email)  ADMIN_EMAIL="$2"; shift 2 ;;
+    --agent-key)    AGENT_KEY="$2";   shift 2 ;;
+    --region)       REGION="$2";      shift 2 ;;
     *) echo "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -41,15 +50,20 @@ done
 # ── Required inputs ───────────────────────────────────────────────────────────
 : "${GCP_PROJECT:?--gcp-project is required}"
 : "${ADMIN_EMAIL:?--admin-email is required}"
-: "${OUTTHINK_ORG_ID:?--org-id is required}"
-: "${SCIM_TOKEN:?--scim-token is required}"
+: "${AGENT_KEY:?--agent-key is required}"
 
 # ── Optional inputs with defaults ─────────────────────────────────────────────
-SYNC_INTERVAL_HOURS="${SYNC_INTERVAL_HOURS:-12}"
-RECONCILIATION_INTERVAL_HOURS="${RECONCILIATION_INTERVAL_HOURS:-24}"
-LOG_LEVEL="${LOG_LEVEL:-INFO}"
+REGION="${REGION:-europe-west1}"
 
-SCIM_BASE_URL="https://api.outthink.io/scim/Organizations/${OUTTHINK_ORG_ID}/v2"
+# Derive Artifact Registry multi-region host from GCP region
+case "$REGION" in
+  us-* | northamerica-* | southamerica-*) AR_HOST="us-docker.pkg.dev" ;;
+  europe-*)                               AR_HOST="europe-docker.pkg.dev" ;;
+  asia-* | australia-*)                   AR_HOST="asia-docker.pkg.dev" ;;
+  *)                                      AR_HOST="europe-docker.pkg.dev" ;;
+esac
+IMAGE="${AR_HOST}/outthink-platform/gws-sync-agent/agent:latest"
+
 PROJECT="$GCP_PROJECT"
 SA_NAME="outthink-sync-agent"
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
@@ -67,14 +81,17 @@ echo -e "  ${BOLD}${WHITE}╰─────────────────
 echo ""
 echo -e "  ${DIM}Project   ${RESET}${CYAN}${PROJECT}${RESET}"
 echo -e "  ${DIM}Region    ${RESET}${CYAN}${REGION}${RESET}"
-echo -e "  ${DIM}Org       ${RESET}${CYAN}${OUTTHINK_ORG_ID}${RESET}"
+echo -e "  ${DIM}Admin     ${RESET}${CYAN}${ADMIN_EMAIL}${RESET}"
 
-# ── Billing ───────────────────────────────────────────────────────────────────
+report_event "setup.started" "SETUP_STARTED" "Setup started for project ${PROJECT} in ${REGION}"
+
+# ── Preflight ─────────────────────────────────────────────────────────────────
 section "Preflight"
 
 BILLING_ENABLED=$(gcloud billing projects describe "$PROJECT" \
   --format="value(billingEnabled)" 2>/dev/null || echo "False")
 if [[ "$BILLING_ENABLED" != "True" ]]; then
+  report_event "setup.failed" "BILLING_NOT_ENABLED" "Billing not enabled on project ${PROJECT}"
   fail "Billing is not enabled on project '${PROJECT}'"
   echo ""
   echo -e "  ${YELLOW}Enable it at:${RESET}"
@@ -139,36 +156,42 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role="roles/storage.objectAdmin" --quiet
 ok "Permissions set"
 
-# ── Secret Manager ────────────────────────────────────────────────────────────
-section "SCIM Token"
+# ── Agent key ─────────────────────────────────────────────────────────────────
+section "Agent Key"
 
-if gcloud secrets describe outthink-scim-token --project="$PROJECT" &>/dev/null; then
-  echo -n "$SCIM_TOKEN" | gcloud secrets versions add outthink-scim-token \
+if gcloud secrets describe outthink-agent-key --project="$PROJECT" &>/dev/null; then
+  echo -n "$AGENT_KEY" | gcloud secrets versions add outthink-agent-key \
     --data-file=- --project="$PROJECT" --quiet
-  ok "Token updated in Secret Manager"
+  ok "Agent key updated in Secret Manager"
 else
-  echo -n "$SCIM_TOKEN" | gcloud secrets create outthink-scim-token \
+  echo -n "$AGENT_KEY" | gcloud secrets create outthink-agent-key \
     --data-file=- \
     --replication-policy=automatic \
     --project="$PROJECT" --quiet
-  ok "Token stored in Secret Manager"
+  ok "Agent key stored in Secret Manager"
 fi
 
-gcloud secrets add-iam-policy-binding outthink-scim-token \
+# secretVersionManager allows the agent to write new versions on key rotation
+gcloud secrets add-iam-policy-binding outthink-agent-key \
   --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/secretmanager.secretAccessor" \
+  --role="roles/secretmanager.secretVersionManager" \
   --project="$PROJECT" --quiet
 
 # ── Cloud Run Job ─────────────────────────────────────────────────────────────
 section "Cloud Run Job"
+
+ENV_VARS="CHECKPOINT_BUCKET=${BUCKET}"
+ENV_VARS+=",REGION=${REGION}"
+ENV_VARS+=",GCP_SERVICE_ACCOUNT=${SA_EMAIL}"
+ENV_VARS+=",OUTTHINK_AGENT_ENDPOINT=${OUTTHINK_AGENT_ENDPOINT}"
 
 gcloud run jobs deploy "$JOB_NAME" \
   --image="$IMAGE" \
   --region="$REGION" \
   --service-account="$SA_EMAIL" \
   --task-timeout=14400s \
-  --set-env-vars="SCIM_BASE_URL=${SCIM_BASE_URL},GOOGLE_ADMIN_EMAIL=${ADMIN_EMAIL},GCP_SERVICE_ACCOUNT=${SA_EMAIL},CHECKPOINT_BUCKET=${BUCKET},STORAGE_PROVIDER=gcs,LOG_LEVEL=${LOG_LEVEL},DRY_RUN=false,SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS},RECONCILIATION_INTERVAL_HOURS=${RECONCILIATION_INTERVAL_HOURS},LOCK_STALE_THRESHOLD_SECONDS=7200" \
-  --set-secrets="SCIM_TOKEN=outthink-scim-token:latest" \
+  --set-env-vars="$ENV_VARS" \
+  --set-secrets="AGENT_KEY=outthink-agent-key:latest" \
   --project="$PROJECT" --quiet
 ok "Job deployed"
 
@@ -182,16 +205,19 @@ if gcloud scheduler jobs describe "$SCHEDULER_JOB" \
 else
   gcloud scheduler jobs create http "$SCHEDULER_JOB" \
     --location="$REGION" \
-    --schedule="0 */${SYNC_INTERVAL_HOURS} * * *" \
+    --schedule="0 */2 * * *" \
     --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/${JOB_NAME}:run" \
     --oauth-service-account-email="$SA_EMAIL" \
     --project="$PROJECT" --quiet
-  ok "Trigger set (every ${SYNC_INTERVAL_HOURS}h)"
+  ok "Trigger set (every 2h)"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 CLIENT_ID=$(gcloud iam service-accounts describe "$SA_EMAIL" \
   --format="value(oauth2ClientId)" --project="$PROJECT")
+
+report_event "setup.completed" "SETUP_OK" \
+  "Setup complete. DWD client ID: ${CLIENT_ID}. Service account: ${SA_EMAIL}. Project: ${PROJECT}. Region: ${REGION}."
 
 echo ""
 echo -e "  ${GREEN}${BOLD}╭─────────────────────────────────────────────────╮${RESET}"
@@ -213,6 +239,5 @@ echo -e "  ${DIM}admin.google.com → Security → API controls → Domain-wide 
 
 section "Step 2 — Verify"
 echo -e "  ${DIM}gcloud run jobs execute ${JOB_NAME} \\${RESET}"
-echo -e "  ${DIM}  --region=${REGION} --project=${PROJECT} \\${RESET}"
-echo -e "  ${DIM}  --args=check-auth${RESET}"
+echo -e "  ${DIM}  --region=${REGION} --project=${PROJECT}${RESET}"
 echo ""
